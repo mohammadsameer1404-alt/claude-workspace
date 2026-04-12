@@ -57,7 +57,7 @@ def transcribe(wav_path: str) -> tuple[list[dict], list[dict]]:
     words:    [{start, end, word}]
     """
     print("  Transcribing with Whisper tiny (word timestamps)...")
-    model  = whisper.load_model("tiny")
+    model  = whisper.load_model("base")
     result = model.transcribe(wav_path, language="en", verbose=False,
                               word_timestamps=True)
     segments = []
