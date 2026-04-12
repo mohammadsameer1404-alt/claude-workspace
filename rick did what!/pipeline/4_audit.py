@@ -266,7 +266,7 @@ def audit_clip(clip_path: str, candidates_json: str | None = None) -> dict:
     return _print_report(clip_id, results)
 
 
-def _print_auditor_line(name: str, result: dict | None) -> None:
+def _print_auditor_line(result: dict | None) -> None:
     if result is None:
         print("SKIPPED (no key)")
     elif "error" in result:
