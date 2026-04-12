@@ -249,10 +249,7 @@ def audit_clip(clip_path: str, candidates_json: str | None = None) -> dict:
         results = {}
 
         print("  [1/3] Gemini 2.5 Flash (vision + text)...", end=" ", flush=True)
-        if frame_ok:
-            results["gemini"] = audit_gemini(frame_path, duration, transcript)
-        else:
-            results["gemini"] = audit_gemini.__wrapped__(duration, transcript) if hasattr(audit_gemini, '__wrapped__') else None
+        results["gemini"] = audit_gemini(frame_path if frame_ok else None, duration, transcript)
         _print_auditor_line("Gemini", results["gemini"])
 
         print("  [2/3] Groq / Llama 3.3 70B (text)...", end=" ", flush=True)
