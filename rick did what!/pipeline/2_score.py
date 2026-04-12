@@ -206,13 +206,18 @@ def panel_review(client: genai.Client, frames: tuple[str, str, str], transcript:
             verdicts[key] = result.get("verdict", "")
             print(f"      [{label}] {scores[key]:.1f} — {verdicts[key][:55]}")
         except Exception as e:
-            print(f"      [{label}] ERROR: {e}")
-            scores[key]   = 0.0
-            verdicts[key] = str(e)
+            print(f"      [{label}] ERROR (skipped): {e}")
+            verdicts[key] = f"ERROR: {e}"
+            # Do NOT add to scores — errored agents are skipped, not zeroed
+
+    if not scores:
+        print("      All agents errored — rejecting clip")
+        return None
 
     consensus = sum(scores.values()) / len(scores)
     min_score  = min(scores.values())
-    approved   = consensus >= PANEL_THRESHOLD and min_score >= 7.0
+    # Require at least 2 agents succeeded AND consensus ≥ threshold
+    approved   = len(scores) >= 2 and consensus >= PANEL_THRESHOLD and min_score >= 7.0
 
     print(f"      Consensus: {consensus:.1f}  min:{min_score:.1f}  "
           f"(need avg≥{PANEL_THRESHOLD} & min≥7.0)  {'✓' if approved else '✗'}")
