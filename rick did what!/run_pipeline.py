@@ -189,8 +189,6 @@ def main():
             print(f"File not found: {args.episode}")
             sys.exit(1)
         process_episode(ep)
-        print("\nScheduling newly exported clips...")
-        schedule(dry_run=args.dry_run)
 
     elif args.all:
         episodes = sorted_episodes()
@@ -203,8 +201,7 @@ def main():
             print(f"  {ep.name}")
         for ep in episodes:
             process_episode(ep)
-        print("\nAll done. Scheduling all clips...")
-        schedule(dry_run=args.dry_run)
+        print("\nAll done. Review clips/ and upload manually when satisfied.")
 
     else:
         parser.print_help()
