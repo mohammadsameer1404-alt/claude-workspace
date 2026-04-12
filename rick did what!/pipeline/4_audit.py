@@ -76,15 +76,14 @@ def audit_gemini(
 
         client = genai.Client(api_key=api_key)
         prompt = _audit_prompt(duration, transcript)
-        with open(frame_path, "rb") as f:
-            img_data = f.read()
+        contents = [types.Part.from_text(text=prompt)]
+        if frame_path and os.path.exists(frame_path):
+            with open(frame_path, "rb") as f:
+                contents.append(types.Part.from_bytes(data=f.read(), mime_type="image/jpeg"))
 
         resp = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[
-                types.Part.from_text(text=prompt),
-                types.Part.from_bytes(data=img_data, mime_type="image/jpeg"),
-            ],
+            contents=contents,
             config=types.GenerateContentConfig(
                 safety_settings=[
                     types.SafetySetting(category=c, threshold="BLOCK_NONE")
