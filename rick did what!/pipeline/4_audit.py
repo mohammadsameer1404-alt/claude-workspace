@@ -125,7 +125,7 @@ def audit_mistral(duration: float, transcript: str) -> dict | None:
     if not api_key:
         return None
     try:
-        from mistralai import Mistral
+        from mistralai.client import Mistral
         client = Mistral(api_key=api_key)
         prompt = _audit_prompt(duration, transcript)
         resp = client.chat.complete(
