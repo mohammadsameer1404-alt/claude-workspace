@@ -101,19 +101,19 @@ def sorted_episodes() -> list[Path]:
 
 
 def process_episode(ep: Path) -> bool:
-    code = extract_code(ep)   # e.g. S01E05 — stable across filename variants
+    code = extract_code(ep)
     print(f"\n{'═'*60}")
     print(f"  EPISODE : {ep.name}")
     print(f"  CODE    : {code}")
     print(f"{'═'*60}")
 
-    # Stage 1
+    # Stage 1: narrative-arc sliding windows + word timestamps
     ok = run_stage("1_analyze.py", "--episode", str(ep), "--output", str(PIPELINE_DIR))
     if not ok or not get_raw_json(code).exists():
         print(f"  [FAIL] Stage 1 failed for {ep.name}")
         return False
 
-    # Stage 2: Haiku bulk screen + Sonnet quality gate
+    # Stage 2: 3-frame scoring, story-arc prompts, hard cap 3 clips
     ok = run_stage("2_score.py",
                    "--raw",    str(get_raw_json(code)),
                    "--output", str(PIPELINE_DIR),
@@ -122,13 +122,20 @@ def process_episode(ep: Path) -> bool:
         print(f"  [FAIL] Stage 2 failed for {ep.name}")
         return False
 
-    # Stage 3: premium 9:16 export
+    # Stage 3: export with neon green captions + word-pop
     ok = run_stage("3_export.py",
                    "--candidates", str(get_candidates_json(code)),
                    "--output",     str(CLIPS_DIR))
     if not ok:
         print(f"  [WARN] Stage 3 had errors for {ep.name} — check clips/")
 
+    # Stage 4: 3-AI virality audit (Gemini + Groq + Mistral, all free)
+    run_stage("4_audit.py",
+              "--clips",    str(CLIPS_DIR),
+              "--pipeline", str(PIPELINE_DIR))
+
+    print(f"\n  Clips ready → {CLIPS_DIR}/")
+    print(f"  Review them and upload manually when satisfied.")
     return True
 
 
