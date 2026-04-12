@@ -63,7 +63,7 @@ def _audit_prompt(duration: float, transcript: str) -> str:
 # ── Auditor 1: Gemini (vision + text) ────────────────────────────────────────
 
 def audit_gemini(
-    frame_path: str,
+    frame_path: str | None,
     duration: float,
     transcript: str,
 ) -> dict | None:
