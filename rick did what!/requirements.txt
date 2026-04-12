@@ -1,0 +1,12 @@
+ffmpeg-python==0.2.0
+openai-whisper
+faster-whisper
+librosa
+anthropic
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+scenedetect[opencv]
+numpy
+Pillow
+pydub
