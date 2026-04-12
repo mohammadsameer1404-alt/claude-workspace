@@ -269,7 +269,6 @@ def export_clip(
         show_hook_until = min(HOOK_DURATION, (end - start) * 0.25)
 
         all_inputs = [raw, hook_png] + [e[0] for e in caption_entries]
-        n_extra    = len(caption_entries)  # number of caption inputs (index 2 onward)
 
         # Build filter_complex
         fc_parts = [f"[0:v]{vf_base}[vbase]"]
