@@ -249,15 +249,15 @@ def audit_clip(clip_path: str, candidates_json: str | None = None) -> dict:
 
         print("  [1/3] Gemini 2.5 Flash (vision + text)...", end=" ", flush=True)
         results["gemini"] = audit_gemini(frame_path if frame_ok else None, duration, transcript)
-        _print_auditor_line("Gemini", results["gemini"])
+        _print_auditor_line(results["gemini"])
 
         print("  [2/3] Groq / Llama 3.3 70B (text)...", end=" ", flush=True)
         results["groq"] = audit_groq(duration, transcript)
-        _print_auditor_line("Groq", results["groq"])
+        _print_auditor_line(results["groq"])
 
         print("  [3/3] Mistral Small (text)...", end=" ", flush=True)
         results["mistral"] = audit_mistral(duration, transcript)
-        _print_auditor_line("Mistral", results["mistral"])
+        _print_auditor_line(results["mistral"])
 
     finally:
         if os.path.exists(frame_path):
