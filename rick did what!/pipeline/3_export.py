@@ -202,7 +202,7 @@ def get_dimensions(path: str) -> tuple[int, int]:
 
 # ── Camera moves + filter building ───────────────────────────────────────────
 
-def _choose_shot_type(seg_idx: int, n_segs: int) -> str:
+def _choose_shot_type(seg_idx: int) -> str:
     """
     70% tight (push-in 1.0→1.10), 20% medium (1.0→1.05), 10% wide (static).
     25% of cuts override to snap punch (1.0→1.30 instant).
