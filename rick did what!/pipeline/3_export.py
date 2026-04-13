@@ -127,7 +127,7 @@ def build_caption_pngs(
     # Pre-render unique (word, size) combinations — avoids duplicate work
     render_cache: dict[tuple[str, int], str] = {}
 
-    def get_png(word: str, size: int, idx: int, frame: int) -> str:
+    def get_png(word: str, size: int, idx: int) -> str:
         key = (word.lower().strip(), size)
         if key not in render_cache:
             path = os.path.join(png_dir, f"{clip_id}_w{idx:04d}_s{size}.png")
