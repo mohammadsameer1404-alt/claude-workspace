@@ -1,0 +1,26 @@
+# Temporary caption PNGs generated during export
+pipeline/caption_pngs/
+
+# Temporary video intermediates
+pipeline/temp_*.mp4
+pipeline/*_cam.mp4
+pipeline/*_cap*.mp4
+
+# Exported clips (large binaries)
+clips/*.mp4
+
+# Pipeline cache / logs
+pipeline/scorer_cache.json
+pipeline/audit_log.json
+pipeline/uploaded.json
+
+# Whisper / audio temp files
+*.wav
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store
