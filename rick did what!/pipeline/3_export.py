@@ -356,7 +356,7 @@ def export_clip(
     words_data:   list[dict],
     out_dir:      str,
     pipeline_dir: str,
-    score:        float = 0.0,
+    score:        float = 0.0,  # noqa: ARG001 — reserved for future use
 ) -> str:
     slug     = make_slug(hook_text)
     out_path = os.path.join(out_dir, f"{slug}.mp4")
