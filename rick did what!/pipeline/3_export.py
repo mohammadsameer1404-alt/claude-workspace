@@ -1,16 +1,12 @@
 """
-Stage 3: Premium 9:16 Clip Export with Burned-In Captions
+Stage 3: Premium 9:16 Clip Export with Burned-In Captions (v2)
 
-Changes from v1:
-  - Real caption burning via Pillow PNG overlays (no libass needed)
-  - Caption style: neon green (#39FF14), 70% from top, Arial Black 68px, 4px black outline
-  - Word-pop: active word shown in WHITE, rest of line in neon green
-  - Hook text: white, centered, 15% from top, 2.5s — now at 90px and properly positioned
-  - No more filter_complex dependency — uses -vf chain for captions
+v2 changes:
+  - Captions: 2 words at a time (TikTok-style), neon green #39FF14 + black outline, 58px, 78% from top
+  - Color grade: eq=contrast=1.2:saturation=1.6:brightness=0.01 + vignette — colors pop for R&M fans
+  - 1.05× zoom crop — characters fill more frame, feels intimate
+  - No libass needed — Pillow PNG overlay chain via FFmpeg filter_complex
   - H.265 M1 hardware, 10Mbps + 192k AAC
-
-Note: libass is NOT required. All captions are pre-rendered as transparent Pillow PNGs
-and chained via FFmpeg overlay filter with time-based enable expressions.
 """
 
 import argparse
@@ -27,18 +23,17 @@ AUDIO_BITRATE = "192k"
 TARGET_W      = 1080
 TARGET_H      = 1920
 
-# ── Caption style ─────────────────────────────────────────────────────────────
-CAPTION_COLOR      = (57, 255, 20)      # neon green #39FF14
-CAPTION_COLOR_POP  = (255, 255, 255)    # white — active word pop
-CAPTION_OUTLINE    = (0, 0, 0)          # black outline
-CAPTION_FONT_SIZE  = 68
-CAPTION_Y_RATIO    = 0.70               # 70% from top
-CAPTION_MAX_CHARS  = 35                 # max chars per caption line
+# ── Caption style (v2: 2-word chunks, neon green, 78% from top) ───────────────
+CAPTION_COLOR       = (57, 255, 20)   # neon green #39FF14
+CAPTION_OUTLINE     = (0, 0, 0)       # black outline
+CAPTION_FONT_SIZE   = 58              # smaller than v1 (was 68)
+CAPTION_Y_RATIO     = 0.78            # lower on screen (was 0.70)
+CAPTION_CHUNK_WORDS = 2               # words shown per caption chunk
 
 # ── Hook text style ───────────────────────────────────────────────────────────
-HOOK_FONT_SIZE     = 90
-HOOK_Y_RATIO       = 0.15              # 15% from top
-HOOK_DURATION      = 2.5              # seconds
+HOOK_FONT_SIZE  = 90
+HOOK_Y_RATIO    = 0.12
+HOOK_DURATION   = 2.5
 
 # ── Font paths ────────────────────────────────────────────────────────────────
 FONT_CANDIDATES = [
@@ -61,87 +56,66 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
 
 def _outline_text(draw, x, y, text, font, fill, outline=CAPTION_OUTLINE, border=4):
     """Draw text with outline using 8-direction offsets."""
-    for dx, dy in [(-border,0),(border,0),(0,-border),(0,border),
-                   (-border,-border),(-border,border),(border,-border),(border,border)]:
+    for dx, dy in [(-border, 0), (border, 0), (0, -border), (0, border),
+                   (-border, -border), (-border, border), (border, -border), (border, border)]:
         draw.text((x + dx, y + dy), text, font=font, fill=(*outline, 255))
     draw.text((x, y), text, font=font, fill=(*fill, 255))
 
 
 def render_hook_png(hook_text: str, out_path: str) -> None:
-    """Render hook title: white text, 90px, centered at 15% from top."""
+    """Render hook title: white text, 90px, centered near top."""
     img  = Image.new("RGBA", (TARGET_W, TARGET_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _load_font(HOOK_FONT_SIZE)
 
-    bbox   = draw.textbbox((0, 0), hook_text, font=font)
-    text_w = bbox[2] - bbox[0]
-    x      = (TARGET_W - text_w) // 2
-    y      = int(TARGET_H * HOOK_Y_RATIO)
+    # Wrap hook text if wider than frame
+    words = hook_text.split()
+    lines = []
+    current = []
+    for word in words:
+        test = " ".join(current + [word])
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if current and (bbox[2] - bbox[0]) > TARGET_W - 60:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(" ".join(current))
 
-    _outline_text(draw, x, y, hook_text, font, (255, 255, 255), border=5)
+    y = int(TARGET_H * HOOK_Y_RATIO)
+    line_h = draw.textbbox((0, 0), "Ag", font=font)[3] + 8
+    for line in lines:
+        bbox   = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0]
+        x      = (TARGET_W - text_w) // 2
+        _outline_text(draw, x, y, line, font, (255, 255, 255), border=5)
+        y += line_h
+
     img.save(out_path, "PNG")
 
 
-def _group_words_into_lines(clip_words: list[dict]) -> list[list[dict]]:
-    """Group clip-relative words into caption lines (max CAPTION_MAX_CHARS chars each)."""
-    lines   = []
-    current = []
-    cur_len = 0
-
-    for w in clip_words:
-        word_text = w["word"]
-        add_len   = len(word_text) + (1 if current else 0)  # +1 for space
-        if current and cur_len + add_len > CAPTION_MAX_CHARS:
-            lines.append(current)
-            current = [w]
-            cur_len = len(word_text)
-        else:
-            current.append(w)
-            cur_len += add_len
-
-    if current:
-        lines.append(current)
-    return lines
-
-
-def _measure_word_x(draw, line_words: list[dict], word_idx: int,
-                    start_x: int, font) -> int:
-    """Return pixel x-offset of word[word_idx] within the line."""
-    prefix = ""
-    for i in range(word_idx):
-        prefix += line_words[i]["word"] + " "
-    if not prefix:
-        return start_x
-    bbox = draw.textbbox((0, 0), prefix, font=font)
-    return start_x + (bbox[2] - bbox[0])
-
-
-def render_caption_line_png(line_words: list[dict], out_path: str,
-                             pop_word_idx: int | None = None) -> None:
+def render_word_chunk_png(words: list[str], out_path: str) -> None:
     """
-    Render one caption line as transparent PNG.
-    If pop_word_idx is None: entire line in neon green (base layer).
-    If pop_word_idx is set: just the pop word in WHITE (pop layer, overlaid on base).
+    Render 1-2 words as neon green bold text with black outline.
+    TikTok-style: compact, centered, easy to read at a glance.
     """
+    text = " ".join(words)
     img  = Image.new("RGBA", (TARGET_W, TARGET_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _load_font(CAPTION_FONT_SIZE)
 
-    full_text = " ".join(w["word"] for w in line_words)
-    bbox      = draw.textbbox((0, 0), full_text, font=font)
-    text_w    = bbox[2] - bbox[0]
-    start_x   = (TARGET_W - text_w) // 2
-    y         = int(TARGET_H * CAPTION_Y_RATIO)
+    bbox   = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    # Safety clamp — shrink font if text somehow exceeds frame width
+    if text_w > TARGET_W - 80:
+        font   = _load_font(max(36, CAPTION_FONT_SIZE - 14))
+        bbox   = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
 
-    if pop_word_idx is None:
-        # Base layer: entire line in neon green
-        _outline_text(draw, start_x, y, full_text, font, CAPTION_COLOR)
-    else:
-        # Pop layer: only the active word in white (no background, no green text)
-        wx    = _measure_word_x(draw, line_words, pop_word_idx, start_x, font)
-        wtext = line_words[pop_word_idx]["word"]
-        _outline_text(draw, wx, y, wtext, font, CAPTION_COLOR_POP)
-
+    x = (TARGET_W - text_w) // 2
+    y = int(TARGET_H * CAPTION_Y_RATIO)
+    _outline_text(draw, x, y, text, font, CAPTION_COLOR, border=5)
     img.save(out_path, "PNG")
 
 
@@ -153,8 +127,8 @@ def build_caption_pngs(
     clip_id: str,
 ) -> list[tuple[str, float, float]]:
     """
-    Pre-render all caption PNGs for a clip.
-    Returns list of (png_path, enable_start, enable_end) sorted by time.
+    Pre-render caption PNGs — 2 words at a time, neon green.
+    Returns list of (png_path, enable_start, enable_end).
     """
     # Filter and retime words to clip-relative timestamps
     clip_words = [
@@ -171,29 +145,22 @@ def build_caption_pngs(
     if not clip_words:
         return []
 
-    lines   = _group_words_into_lines(clip_words)
-    entries = []   # (png_path, start, end)
+    entries = []
+    step = CAPTION_CHUNK_WORDS
+    for i in range(0, len(clip_words), step):
+        chunk   = clip_words[i : i + step]
+        words   = [w["word"] for w in chunk]
+        t_start = chunk[0]["start"]
+        t_end   = chunk[-1]["end"]
 
-    for line_idx, line_words in enumerate(lines):
-        if not line_words:
-            continue
+        # Ensure minimum visible duration (avoid sub-50ms flashes)
+        if t_end - t_start < 0.05:
+            t_end = t_start + 0.05
 
-        line_start = line_words[0]["start"]
-        line_end   = line_words[-1]["end"]
+        png_path = os.path.join(png_dir, f"{clip_id}_c{i:04d}.png")
+        render_word_chunk_png(words, png_path)
+        entries.append((png_path, t_start, t_end))
 
-        # Base layer: neon green line (visible for full line duration)
-        base_path = os.path.join(png_dir, f"{clip_id}_L{line_idx:03d}_base.png")
-        render_caption_line_png(line_words, base_path, pop_word_idx=None)
-        entries.append((base_path, line_start, line_end))
-
-        # Pop layers: one per word (white active word overlaid on top of green)
-        for word_idx, word in enumerate(line_words):
-            pop_path = os.path.join(png_dir, f"{clip_id}_L{line_idx:03d}_W{word_idx:03d}.png")
-            render_caption_line_png(line_words, pop_path, pop_word_idx=word_idx)
-            entries.append((pop_path, word["start"], word["end"]))
-
-    # Sort by start time so overlay order is chronological
-    entries.sort(key=lambda x: x[1])
     return entries
 
 
@@ -209,7 +176,10 @@ def get_dimensions(path: str) -> tuple[int, int]:
 
 
 def crop_scale_filter(src_w: int, src_h: int) -> str:
-    """Centre-crop to 9:16 then scale to 1080×1920."""
+    """
+    Centre-crop to 9:16, scale to 1080×1920 with 1.05× zoom-in,
+    then apply color grade (contrast+saturation) and vignette.
+    """
     ar     = 9 / 16
     crop_w = int(src_h * ar)
     crop_h = src_h
@@ -218,7 +188,18 @@ def crop_scale_filter(src_w: int, src_h: int) -> str:
         crop_h = int(src_w / ar)
     x = (src_w - crop_w) // 2
     y = (src_h - crop_h) // 2
-    return f"crop={crop_w}:{crop_h}:{x}:{y},scale={TARGET_W}:{TARGET_H}:flags=lanczos"
+
+    # 1.05× zoom: overshoot then crop back to exact target
+    zoom_w = int(TARGET_W * 1.05)   # 1134
+    zoom_h = int(TARGET_H * 1.05)   # 2016
+
+    return (
+        f"crop={crop_w}:{crop_h}:{x}:{y},"
+        f"scale={zoom_w}:{zoom_h}:flags=lanczos,"
+        f"crop={TARGET_W}:{TARGET_H},"
+        f"eq=contrast=1.2:saturation=1.6:brightness=0.01,"
+        f"vignette=PI/5"
+    )
 
 
 def export_clip(
@@ -256,31 +237,29 @@ def export_clip(
         # Step 2: render hook PNG
         render_hook_png(hook_text, hook_png)
 
-        # Step 3: build caption PNGs
+        # Step 3: build caption PNGs (2 words at a time, neon green)
         caption_entries = build_caption_pngs(words_data, start, end, png_dir, clip_id)
-        print(f"  Rendered {len(caption_entries)} caption overlays")
+        print(f"  Rendered {len(caption_entries)} caption chunks")
 
         # Step 4: get source dimensions
         w, h    = get_dimensions(raw)
         vf_base = crop_scale_filter(w, h)
 
-        # Step 5: build FFmpeg filter_complex with all overlays
-        # Input 0: raw video, Input 1: hook PNG, Inputs 2+: caption PNGs
+        # Step 5: build FFmpeg filter_complex
+        # Input 0: raw video  |  Input 1: hook PNG  |  Inputs 2+: caption PNGs
         show_hook_until = min(HOOK_DURATION, (end - start) * 0.25)
+        all_inputs      = [raw, hook_png] + [e[0] for e in caption_entries]
 
-        all_inputs = [raw, hook_png] + [e[0] for e in caption_entries]
-
-        # Build filter_complex
         fc_parts = [f"[0:v]{vf_base}[vbase]"]
         prev     = "vbase"
 
-        # Hook overlay (input index 1)
+        # Hook overlay
         fc_parts.append(
             f"[{prev}][1:v]overlay=0:0:enable='lt(t\\,{show_hook_until:.2f})'[vh]"
         )
         prev = "vh"
 
-        # Caption overlays (input indices 2, 3, ...)
+        # Caption overlays
         for i, (_, t_start, t_end) in enumerate(caption_entries):
             inp_idx = i + 2
             label   = f"vc{i}"
@@ -290,15 +269,13 @@ def export_clip(
             )
             prev = label
 
-        # Rename final label to [out]
-        fc_parts[-1] = fc_parts[-1].rsplit(f"[{prev}]", 1)[0] + "[out]"
-        if not caption_entries:
-            # No captions — rename [vh] to [out]
-            fc_parts[-1] = fc_parts[-1].replace("[vh]", "[out]")
+        # Rename final output label to [out]
+        last = fc_parts[-1]
+        fc_parts[-1] = last[:last.rfind("[")] + "[out]"
 
         filter_complex = ";".join(fc_parts)
 
-        # Build FFmpeg command
+        # Step 6: encode
         cmd = ["ffmpeg", "-y"]
         for inp in all_inputs:
             cmd += ["-i", inp]
@@ -322,13 +299,12 @@ def export_clip(
         size_mb = os.path.getsize(out_path) / 1_000_000
         print(f"  Exported: {clip_id}.mp4  [{start:.0f}s–{end:.0f}s]  {size_mb:.1f} MB")
         print(f"    Hook    : \"{hook_text}\"")
-        print(f"    Captions: neon green, 70% down, word-pop ✓")
+        print(f"    Captions: neon green, 2-word chunks, {int(CAPTION_Y_RATIO*100)}% from top ✓")
+        print(f"    Color   : contrast+1.2 saturation+1.6 vignette 1.05× zoom ✓")
 
     finally:
         if os.path.exists(raw):
             os.unlink(raw)
-        # Keep caption PNGs for debugging; remove if you prefer clean runs
-        # shutil.rmtree(png_dir, ignore_errors=True)
 
     return out_path
 
@@ -348,7 +324,7 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
             words_data = json.load(f)
         print(f"[3_export] Word timestamps: {len(words_data)} words loaded")
     else:
-        # Fallback: estimate from transcript
+        # Fallback: estimate from transcript segments
         transcript_path = os.path.join(pipeline_dir, f"{episode}_transcript.json")
         if os.path.exists(transcript_path):
             with open(transcript_path) as f:
@@ -375,8 +351,8 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
     print(f"\n[3_export] Episode  : {episode}")
     print(f"[3_export] Clips    : {len(clips)} (max 3 per episode)")
     print(f"[3_export] Quality  : {TARGET_W}x{TARGET_H} @ {VIDEO_BITRATE} H.265 (M1 HW)")
-    print(f"[3_export] Captions : neon green #{'{:02X}{:02X}{:02X}'.format(*CAPTION_COLOR)}, "
-          f"{int(CAPTION_Y_RATIO*100)}% from top, word-pop")
+    print(f"[3_export] Captions : neon green, 2-word chunks, 78% from top")
+    print(f"[3_export] Effects  : contrast+1.2 saturation+1.6 vignette 1.05× zoom")
 
     exported = []
     for clip in clips:
