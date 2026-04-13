@@ -2,23 +2,23 @@
 Stage 3: 9:16 Export — v4 (caption_style.json + edit_rules.json spec)
 
 Caption spec (caption_style.json):
-  - Font: Impact (Komika Axis fallback — not on system)
+  - Font: Impact (Komika Axis not on system — Impact is the meme-equivalent)
   - Color: #5FE3AC (mint green), 9px black stroke, lowercase
-  - Cap height: 150px → font_size ≈ 195px for Impact
-  - Position: y=1229px (64% of 1920), center horizontal
-  - One word per caption, duration clamped 120-600ms (default 280ms)
-  - Animation-in: 3-frame scale overshoot 70%→108%→100%
+  - Cap height ≈150px → font_size 195px for Impact
+  - Position: y=1229px (64% of 1920), centered horizontally
+  - ONE word per caption, duration clamped 120-600ms (default 280ms)
+  - Animation-in: 3-frame scale overshoot 70%→108%→100% via drawtext chain
   - Animation-out: instant cut
 
 Edit spec (edit_rules.json):
-  - Hard cuts only, no transitions
-  - Per-segment camera moves: sustained push-in (tight/medium) or snap punch
+  - Hard cuts only (no transitions)
+  - Per-segment camera: sustained push-in (tight/medium) or snap punch
   - Shot distribution: 70% tight, 20% medium, 10% wide; 25% of cuts → snap punch
-  - Lateral crop offset alternates ±5% per segment to simulate speaker framing
-  - Letterbox removal (active band y: 23.4%-72.4% of source)
+  - Lateral crop offset ±5% per segment (simulate speaker tracking)
+  - Letterbox removal (active band y: 23.4%-72.4% of source height)
 
-Filenames: creative slug from hook_text (e.g. "jerry-is-doomed.mp4")
-No hook text overlay in video — slug used only for filename.
+Captions use drawtext filter (no PNG inputs) — avoids OS file descriptor limits.
+Filenames: creative slug from hook_text. No hook text shown in video.
 manifest.json written to clips/ for audit stage compatibility.
 """
 
@@ -30,7 +30,6 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
 
 # ── Export settings ───────────────────────────────────────────────────────────
 VIDEO_BITRATE = "10M"
@@ -39,76 +38,49 @@ TARGET_W      = 1080
 TARGET_H      = 1920
 
 # ── Caption style (caption_style.json) ───────────────────────────────────────
-CAPTION_COLOR     = (95, 227, 172)     # #5FE3AC mint green
-CAPTION_OUTLINE   = (0, 0, 0)
-CAPTION_STROKE_PX = 9                 # uniform hard stroke
-CAPTION_FONT_SIZE = 195               # ≈150px cap height for Impact
-CAPTION_POP_70    = int(195 * 0.70)   # 136px — frame 0 (scale in)
-CAPTION_POP_108   = int(195 * 1.08)   # 210px — frame 1 (overshoot)
-CAPTION_Y_PX      = 1229             # fixed y — 64% of 1920
+CAPTION_COLOR_HEX = "5FE3AC"          # #5FE3AC mint green
+CAPTION_STROKE_PX = 9
+CAPTION_FONT_SIZE = 195               # ~150px cap height for Impact
+CAPTION_POP_70    = int(195 * 0.70)   # 136px frame 0
+CAPTION_POP_108   = int(195 * 1.08)   # 210px frame 1
+CAPTION_Y_PX      = 1229             # 64% of 1920
 CAPTION_MIN_MS    = 120
 CAPTION_MAX_MS    = 600
 CAPTION_DEFAULT_MS = 280
 
-# ── Font paths ────────────────────────────────────────────────────────────────
-FONT_CANDIDATES = [
-    "/System/Library/Fonts/Supplemental/Impact.ttf",
+IMPACT_FONT = "/System/Library/Fonts/Supplemental/Impact.ttf"
+FONT_FALLBACKS = [
+    IMPACT_FONT,
     "/System/Library/Fonts/Supplemental/Arial Black.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
 ]
 
 
-def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    for path in FONT_CANDIDATES:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size)
-            except Exception:
-                pass
-    return ImageFont.load_default()
+def _find_font() -> str:
+    for p in FONT_FALLBACKS:
+        if os.path.exists(p):
+            return p
+    return ""
 
 
-def _outline_text(draw, x, y, text, font, fill, border: int = CAPTION_STROKE_PX):
-    for dx, dy in [(-border, 0), (border, 0), (0, -border), (0, border),
-                   (-border, -border), (-border, border), (border, -border), (border, border)]:
-        draw.text((x + dx, y + dy), text, font=font, fill=(*CAPTION_OUTLINE, 255))
-    draw.text((x, y), text, font=font, fill=(*fill, 255))
+def _escape_drawtext(text: str) -> str:
+    """Escape text for FFmpeg drawtext filter."""
+    text = text.replace("\\", "\\\\")
+    text = text.replace("'",  "\u2019")   # replace curly apostrophe to avoid shell issues
+    text = text.replace(":",  "\\:")
+    text = text.replace("%",  "\\%")
+    return text
 
 
-def render_word_png(word: str, out_path: str, size: int = CAPTION_FONT_SIZE) -> None:
-    """Render a single caption word: lowercase, mint green, Impact, fixed y=1229."""
-    text = word.lower().strip()
-    if not text:
-        return
-    img  = Image.new("RGBA", (TARGET_W, TARGET_H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    font = _load_font(size)
+# ── Caption timing ────────────────────────────────────────────────────────────
 
-    bbox   = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    # Safety clamp if text exceeds frame width
-    if text_w > TARGET_W - 60:
-        font   = _load_font(max(60, size - 30))
-        bbox   = draw.textbbox((0, 0), text, font=font)
-        text_w = bbox[2] - bbox[0]
-
-    x = (TARGET_W - text_w) // 2
-    y = CAPTION_Y_PX
-    _outline_text(draw, x, y, text, font, CAPTION_COLOR)
-    img.save(out_path, "PNG")
-
-
-def build_caption_pngs(
+def build_caption_words(
     words_data: list[dict],
     clip_start: float,
     clip_end:   float,
-    png_dir:    str,
-    clip_id:    str,
-) -> list[tuple[str, float, float]]:
+) -> list[dict]:
     """
-    One word per caption, 3-frame scale overshoot animation on entry.
-    Returns list of (png_path, t_start, t_end) sorted by time.
+    Return list of {word, t_start, t_end} dicts (clip-relative, clamped duration).
     """
     clip_words = [
         {
@@ -120,51 +92,68 @@ def build_caption_pngs(
         if w["start"] >= clip_start - 0.05 and w["end"] <= clip_end + 0.05
            and w["word"].strip()
     ]
-    if not clip_words:
-        return []
 
-    entries = []
-    for idx, w in enumerate(clip_words):
-        word    = w["word"]
-        t_start = w["start"]
-        raw_ms  = (w["end"] - w["start"]) * 1000
-
-        # Clamp duration to spec range
+    result = []
+    for w in clip_words:
+        raw_ms = (w["end"] - w["start"]) * 1000
         if raw_ms < 50:
             dur_ms = CAPTION_DEFAULT_MS
         else:
             dur_ms = max(CAPTION_MIN_MS, min(CAPTION_MAX_MS, raw_ms))
+        result.append({
+            "word":    w["word"],
+            "t_start": w["start"],
+            "t_end":   w["start"] + dur_ms / 1000.0,
+        })
+    return result
 
-        t_end  = t_start + dur_ms / 1000.0
-        f0_end = t_start + 0.033   # frame 0 end (1 frame @30fps)
-        f1_end = t_start + 0.067   # frame 1 end (2 frames @30fps)
 
-        base = os.path.join(png_dir, f"{clip_id}_w{idx:04d}")
+def build_drawtext_filter(caption_words: list[dict], font_path: str) -> str:
+    """
+    Build a comma-chained sequence of drawtext filters for the caption words.
+    Each word gets 3 drawtext entries (overshoot animation: 70%→108%→100%).
+    No file inputs needed — pure FFmpeg filter.
+    """
+    if not caption_words or not font_path:
+        return ""
 
-        # Frame 0 — 70% size (scale-in)
-        f0 = base + "_f0.png"
-        render_word_png(word, f0, size=CAPTION_POP_70)
-        entries.append((f0, t_start, min(f0_end, t_end)))
+    parts = []
+    fp    = font_path.replace("'", "\\'").replace(":", "\\:")
 
-        # Frame 1 — 108% size (overshoot)
-        if t_end > f0_end:
-            f1 = base + "_f1.png"
-            render_word_png(word, f1, size=CAPTION_POP_108)
-            entries.append((f1, f0_end, min(f1_end, t_end)))
+    for w in caption_words:
+        text    = _escape_drawtext(w["word"].lower().strip())
+        t_start = w["t_start"]
+        t_end   = w["t_end"]
+        f0_end  = t_start + 0.033   # frame 0 end
+        f1_end  = t_start + 0.067   # frame 1 end
 
-        # Frame 2+ — 100% normal size
-        if t_end > f1_end:
-            f2 = base + "_f2.png"
-            render_word_png(word, f2, size=CAPTION_FONT_SIZE)
-            entries.append((f2, f1_end, t_end))
+        frames = [
+            (CAPTION_POP_70,    t_start,         min(f0_end, t_end)),
+            (CAPTION_POP_108,   max(f0_end, t_start + 0.001), min(f1_end, t_end)),
+            (CAPTION_FONT_SIZE, max(f1_end, t_start + 0.002), t_end),
+        ]
 
-    return entries
+        for size, ts, te in frames:
+            if te <= ts + 0.001:
+                continue
+            parts.append(
+                f"drawtext=fontfile='{fp}'"
+                f":text='{text}'"
+                f":fontsize={size}"
+                f":fontcolor=0x{CAPTION_COLOR_HEX}"
+                f":borderw={CAPTION_STROKE_PX}"
+                f":bordercolor=0x000000"
+                f":x=(w-text_w)/2"
+                f":y={CAPTION_Y_PX}"
+                f":enable='between(t\\,{ts:.3f}\\,{te:.3f})'"
+            )
+
+    return ",".join(parts)
 
 
 # ── Scene detection ───────────────────────────────────────────────────────────
 
 def detect_scene_cuts(video_path: str) -> list[float]:
-    """Return cut timestamps (0-relative seconds) via PySceneDetect."""
     try:
         from scenedetect import open_video, SceneManager
         from scenedetect.detectors import ContentDetector
@@ -200,17 +189,11 @@ def get_dimensions(path: str) -> tuple[int, int]:
     return int(w), int(h)
 
 
-# ── Camera moves + filter building ───────────────────────────────────────────
+# ── Camera moves ──────────────────────────────────────────────────────────────
 
 def _choose_shot_type(seg_idx: int) -> str:
-    """
-    70% tight (push-in 1.0→1.10), 20% medium (1.0→1.05), 10% wide (static).
-    25% of cuts override to snap punch (1.0→1.30 instant).
-    Deterministic via segment index for reproducibility.
-    """
-    rng = random.Random(seg_idx * 7919)   # seeded per-segment
-    r   = rng.random()
-    if r < 0.25:
+    rng = random.Random(seg_idx * 7919)
+    if rng.random() < 0.25:
         return "snap"
     r2 = rng.random()
     if r2 < 0.70:
@@ -221,44 +204,33 @@ def _choose_shot_type(seg_idx: int) -> str:
 
 
 def _zoompan_expr(shot_type: str, seg_dur: float, crop_w: int, crop_h: int) -> str:
-    n_frames = max(1, int(seg_dur * 30))
+    n  = max(1, int(seg_dur * 30))
+    cx = f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={crop_w}x{crop_h}"
     if shot_type == "tight":
-        delta = 0.10 / n_frames
-        return (f"zoompan=z='min(zoom+{delta:.7f},1.10)':d=1"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={crop_w}x{crop_h}")
+        d = 0.10 / n
+        return f"zoompan=z='min(zoom+{d:.7f},1.10)':d=1{cx}"
     elif shot_type == "medium":
-        delta = 0.05 / n_frames
-        return (f"zoompan=z='min(zoom+{delta:.7f},1.05)':d=1"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={crop_w}x{crop_h}")
+        d = 0.05 / n
+        return f"zoompan=z='min(zoom+{d:.7f},1.05)':d=1{cx}"
     elif shot_type == "snap":
-        return (f"zoompan=z='if(lte(on,2),1.0,1.30)':d=1"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={crop_w}x{crop_h}")
-    else:  # wide — static
-        return (f"zoompan=z='1.0':d=1"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={crop_w}x{crop_h}")
+        return f"zoompan=z='if(lte(on,2),1.0,1.30)':d=1{cx}"
+    else:
+        return f"zoompan=z='1.0':d=1{cx}"
 
 
-def build_video_filter_complex(
+def build_video_filter(
     src_w: int,
     src_h: int,
     cut_times: list[float],
     clip_duration: float,
-    caption_entries: list[tuple[str, float, float]],
-) -> tuple[str, list[int]]:
+    drawtext_chain: str,
+) -> str:
     """
-    Build the full filter_complex string and return (filter_str, caption_input_indices).
-
-    Layout:
-      Input 0: raw clip
-      Inputs 1..N: caption PNGs (no hook PNG)
-
-    Filter stages per segment:
-      trim → setpts → crop (with lateral offset) → zoompan → scale → crop → eq → vignette
-
-    Concat all segments → [vbase]
-    Chain caption overlays on [vbase] → [out]
+    Single filter_complex string:
+      - Per-segment: trim → setpts → crop (lateral offset) → zoompan → scale → crop → eq → vignette
+      - Concat segments → [vbase]
+      - Apply drawtext caption chain → [out]
     """
-    # 9:16 crop geometry
     ar     = 9 / 16
     crop_w = int(src_h * ar)
     crop_h = src_h
@@ -268,76 +240,65 @@ def build_video_filter_complex(
     center_x = (src_w - crop_w) // 2
     center_y = (src_h - crop_h) // 2
 
-    # Letterbox adjustment (spec: active band 23.4%–72.4%)
-    lb_top    = int(src_h * 0.234)
-    lb_bottom = int(src_h * 0.724)
-    active_h  = lb_bottom - lb_top
+    # Letterbox removal (active band 23.4%-72.4% of source height)
+    lb_top   = int(src_h * 0.234)
+    lb_bot   = int(src_h * 0.724)
+    active_h = lb_bot - lb_top
     if active_h >= crop_h:
         center_y = lb_top + (active_h - crop_h) // 2
 
-    # Output scale (1.05× overshoot then crop back)
     zoom_w = int(TARGET_W * 1.05)
     zoom_h = int(TARGET_H * 1.05)
+    grade  = (f"scale={zoom_w}:{zoom_h}:flags=lanczos,"
+              f"crop={TARGET_W}:{TARGET_H},"
+              f"eq=contrast=1.2:saturation=1.6:brightness=0.01,"
+              f"vignette=PI/5")
 
-    grade = f"scale={zoom_w}:{zoom_h}:flags=lanczos,crop={TARGET_W}:{TARGET_H},eq=contrast=1.2:saturation=1.6:brightness=0.01,vignette=PI/5"
+    boundaries  = [0.0] + list(cut_times) + [clip_duration]
+    segments    = [(boundaries[i], boundaries[i + 1])
+                   for i in range(len(boundaries) - 1)]
 
-    # Segments from cut times
-    boundaries = [0.0] + list(cut_times) + [clip_duration]
-    segments   = [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
-    fc_parts = []
-    seg_labels = []
+    fc_parts    = []
+    seg_labels  = []
 
     for i, (t_s, t_e) in enumerate(segments):
-        seg_dur  = t_e - t_s
-        if seg_dur < 0.033:          # skip sub-frame segments
+        seg_dur = t_e - t_s
+        if seg_dur < 0.033:
             continue
 
-        shot     = _choose_shot_type(i)
-        zp_expr  = _zoompan_expr(shot, seg_dur, crop_w, crop_h)
+        shot  = _choose_shot_type(i)
+        zp    = _zoompan_expr(shot, seg_dur, crop_w, crop_h)
 
-        # Lateral crop offset — alternate ±5% per segment
-        direction   = (i % 3) - 1   # -1, 0, +1 cycling
-        lateral_px  = int(crop_w * 0.05)
-        seg_crop_x  = max(0, min(src_w - crop_w, center_x + direction * lateral_px))
+        # Lateral crop offset — cycle -1/0/+1 per segment
+        direction  = (i % 3) - 1
+        lateral_px = int(crop_w * 0.05)
+        seg_x      = max(0, min(src_w - crop_w, center_x + direction * lateral_px))
 
         label = f"seg{i}"
         fc_parts.append(
             f"[0:v]trim=start={t_s:.3f}:end={t_e:.3f},"
             f"setpts=PTS-STARTPTS,"
-            f"crop={crop_w}:{crop_h}:{seg_crop_x}:{center_y},"
-            f"{zp_expr},"
+            f"crop={crop_w}:{crop_h}:{seg_x}:{center_y},"
+            f"{zp},"
             f"{grade}[{label}]"
         )
         seg_labels.append(label)
 
-    # Concat all segments
     concat_in = "".join(f"[{l}]" for l in seg_labels)
     fc_parts.append(f"{concat_in}concat=n={len(seg_labels)}:v=1:a=0[vbase]")
 
-    # Caption overlays — input indices start at 1 (no hook PNG)
-    prev = "vbase"
-    caption_input_indices = list(range(1, 1 + len(caption_entries)))
+    # Drawtext caption chain (no extra inputs)
+    if drawtext_chain:
+        fc_parts.append(f"[vbase]{drawtext_chain}[out]")
+    else:
+        fc_parts.append("[vbase]null[out]")
 
-    for i, (_, t_start, t_end) in enumerate(caption_entries):
-        inp   = caption_input_indices[i]
-        label = f"vc{i}"
-        fc_parts.append(
-            f"[{prev}][{inp}:v]overlay=0:0:"
-            f"enable='between(t\\,{t_start:.3f}\\,{t_end:.3f})'[{label}]"
-        )
-        prev = label
-
-    # Final label
-    last = fc_parts[-1]
-    fc_parts[-1] = last[:last.rfind("[")] + "[out]"
-
-    return ";".join(fc_parts), caption_input_indices
+    return ";".join(fc_parts)
 
 
 # ── Filename slug ─────────────────────────────────────────────────────────────
 
 def make_slug(hook_text: str) -> str:
-    """'JERRY IS DOOMED 😱' → 'jerry-is-doomed'"""
     name = re.sub(r'[^\w\s]', '', hook_text)
     name = name.lower().strip()
     name = re.sub(r'\s+', '-', name)
@@ -345,7 +306,7 @@ def make_slug(hook_text: str) -> str:
     return name[:40] or "clip"
 
 
-# ── Main export function ──────────────────────────────────────────────────────
+# ── Main export ───────────────────────────────────────────────────────────────
 
 def export_clip(
     video_path:   str,
@@ -355,8 +316,6 @@ def export_clip(
     hook_text:    str,
     words_data:   list[dict],
     out_dir:      str,
-    pipeline_dir: str,
-    score:        float = 0.0,  # noqa: ARG001 — reserved for future use
 ) -> str:
     slug     = make_slug(hook_text)
     out_path = os.path.join(out_dir, f"{slug}.mp4")
@@ -365,14 +324,11 @@ def export_clip(
         print(f"  [skip] {slug}.mp4 already exported")
         return out_path
 
-    png_dir = os.path.join(pipeline_dir, "caption_pngs", clip_id)
-    os.makedirs(png_dir, exist_ok=True)
-
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
         raw = f.name
 
     try:
-        # Step 1: stream-copy segment (t=0 relative in output)
+        # Step 1: stream-copy segment (timestamps reset to 0)
         subprocess.run([
             "ffmpeg", "-y",
             "-ss", str(start), "-to", str(end),
@@ -386,25 +342,23 @@ def export_clip(
         clip_dur  = get_clip_duration(raw)
         print(f"  Cuts: {len(cut_times)} → {[f'{t:.1f}s' for t in cut_times]}")
 
-        # Step 3: build caption PNGs (one word, 3-frame overshoot)
-        caption_entries = build_caption_pngs(words_data, start, end, png_dir, clip_id)
-        print(f"  Caption frames: {len(caption_entries)} ({len([e for e in caption_entries if '_f0' in e[0]])} words × 3)")
+        # Step 3: build caption word timings
+        caption_words = build_caption_words(words_data, start, end)
+        print(f"  Caption words: {len(caption_words)}")
 
-        # Step 4: source dimensions
+        # Step 4: build drawtext chain
+        font_path     = _find_font()
+        drawtext_chain = build_drawtext_filter(caption_words, font_path)
+
+        # Step 5: source dimensions + full filter
         w, h = get_dimensions(raw)
+        fc   = build_video_filter(w, h, cut_times, clip_dur, drawtext_chain)
 
-        # Step 5: build filter_complex
-        fc_str, cap_indices = build_video_filter_complex(
-            w, h, cut_times, clip_dur, caption_entries
-        )
-
-        # Step 6: assemble FFmpeg command
-        # Input 0: raw  |  Inputs 1+: caption PNGs (no hook PNG)
-        cmd = ["ffmpeg", "-y", "-i", raw]
-        for png_path, _, _ in caption_entries:
-            cmd += ["-i", png_path]
-        cmd += [
-            "-filter_complex", fc_str,
+        # Step 6: encode (only 1 input — no PNG inputs needed)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", raw,
+            "-filter_complex", fc,
             "-map", "[out]",
             "-map", "0:a",
             "-c:v", "hevc_videotoolbox",
@@ -413,15 +367,16 @@ def export_clip(
             "-c:a", "aac",
             "-b:a", AUDIO_BITRATE,
             "-movflags", "+faststart",
-            "-metadata", f"title={clip_id}",   # preserve technical ID in metadata
+            "-metadata", f"title={clip_id}",
             out_path,
             "-loglevel", "error",
         ]
-
         subprocess.run(cmd, check=True)
 
         size_mb = os.path.getsize(out_path) / 1_000_000
         print(f"  Exported: {slug}.mp4  [{start:.0f}s–{end:.0f}s]  {size_mb:.1f} MB")
+        print(f"    Caption : #{CAPTION_COLOR_HEX} Impact, {len(caption_words)} words, 64% from top")
+        print(f"    Camera  : {len(cut_times)} cut-point reframes, push-in/punch per segment")
 
     finally:
         if os.path.exists(raw):
@@ -429,8 +384,6 @@ def export_clip(
 
     return out_path
 
-
-# ── run() ─────────────────────────────────────────────────────────────────────
 
 def run(candidates_json: str, out_dir: str) -> list[str]:
     with open(candidates_json) as f:
@@ -450,9 +403,9 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
         transcript_path = os.path.join(pipeline_dir, f"{episode}_transcript.json")
         if os.path.exists(transcript_path):
             with open(transcript_path) as f:
-                segments = json.load(f)
+                segs = json.load(f)
             words_data = []
-            for seg in segments:
+            for seg in segs:
                 seg_words = [w for w in seg["text"].split() if w.strip()]
                 if not seg_words:
                     continue
@@ -463,17 +416,16 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
                         "end":   round(seg["start"] + (i + 1) * dur, 3),
                         "word":  w,
                     })
-            print(f"[3_export] Word timestamps: estimated {len(words_data)} from segments")
         else:
             words_data = []
             print("[3_export] WARNING: no word timestamps — captions absent")
 
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"\n[3_export] Episode  : {episode}")
-    print(f"[3_export] Clips    : {len(clips)}")
-    print(f"[3_export] Caption  : #5FE3AC Impact, 1-word, 64% from top, pop-in animation")
-    print(f"[3_export] Camera   : scene-cut push-in/punch, lateral reframe, no hook overlay")
+    print(f"\n[3_export] Episode : {episode}")
+    print(f"[3_export] Clips   : {len(clips)}")
+    print(f"[3_export] Caption : #{CAPTION_COLOR_HEX} Impact, 1-word chunks, drawtext (no PNG inputs)")
+    print(f"[3_export] Camera  : scene-cut push-in/punch, lateral reframe, no hook overlay")
 
     manifest_path = os.path.join(out_dir, "manifest.json")
     manifest      = {}
@@ -493,12 +445,8 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
                 hook_text=clip.get("hook_text", "clip"),
                 words_data=words_data,
                 out_dir=out_dir,
-                pipeline_dir=pipeline_dir,
-                score=clip.get("score", 0.0),
             )
             exported.append(path)
-
-            # Write manifest entry
             manifest[slug] = {
                 "clip_id":   clip["clip_id"],
                 "episode":   episode,
