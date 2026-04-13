@@ -384,7 +384,6 @@ def export_clip(
 
         # ── Step 3: render caption PNGs ───────────────────────────────────────
         caption_entries = build_caption_pngs(words_data, start, end, png_dir, clip_id)
-        n_words = len([e for e in caption_entries if e[0].endswith("_s136.png") or "_s195.png" in e[0] or "_s210.png" in e[0]])
         print(f"  Caption frames: {len(caption_entries)} ({len(caption_entries)//3 if caption_entries else 0} words × 3)")
 
         # ── Step 4: apply captions in batches of CAPTION_BATCH_SZ ────────────
