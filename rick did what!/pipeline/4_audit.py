@@ -285,9 +285,20 @@ def run(clips_dir: str, pipeline_dir: str) -> list[dict]:
     print(f"\n[4_audit] Auditing {len(clip_files)} clip(s)...")
     print("[4_audit] APIs: Gemini(free) + Groq(free) + Mistral(free)")
 
-    # Find candidates JSON for each clip
+    # Find candidates JSON — supports creative slugs via manifest.json
+    manifest_path = os.path.join(clips_dir, "manifest.json")
+    manifest: dict = {}
+    if os.path.exists(manifest_path):
+        with open(manifest_path) as _mf:
+            manifest = json.load(_mf)
+
     def find_candidates(clip_id: str) -> str | None:
-        # e.g. S01E05_340_385 → S01E05_candidates.json
+        # Creative slug → look up episode in manifest
+        if clip_id in manifest:
+            episode = manifest[clip_id]["episode"]
+            path    = os.path.join(pipeline_dir, f"{episode}_candidates.json")
+            return path if os.path.exists(path) else None
+        # Fallback: technical ID format e.g. S01E05_340_385
         episode = "_".join(clip_id.split("_")[:2])
         path    = os.path.join(pipeline_dir, f"{episode}_candidates.json")
         return path if os.path.exists(path) else None
