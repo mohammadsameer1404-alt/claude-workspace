@@ -147,13 +147,13 @@ def build_caption_pngs(
         word    = w["word"]
 
         # Frame 0 — 70% (scale in)
-        entries.append((get_png(word, CAPTION_POP_70,    idx, 0), t_start,           min(f0_end, t_end)))
+        entries.append((get_png(word, CAPTION_POP_70,    idx), t_start,           min(f0_end, t_end)))
         # Frame 1 — 108% (overshoot)
         if t_end > f0_end:
-            entries.append((get_png(word, CAPTION_POP_108,   idx, 1), max(f0_end, t_start + 0.001), min(f1_end, t_end)))
+            entries.append((get_png(word, CAPTION_POP_108,   idx), max(f0_end, t_start + 0.001), min(f1_end, t_end)))
         # Frame 2+ — 100% (normal)
         if t_end > f1_end:
-            entries.append((get_png(word, CAPTION_FONT_SIZE, idx, 2), max(f1_end, t_start + 0.002), t_end))
+            entries.append((get_png(word, CAPTION_FONT_SIZE, idx), max(f1_end, t_start + 0.002), t_end))
 
     return entries
 
