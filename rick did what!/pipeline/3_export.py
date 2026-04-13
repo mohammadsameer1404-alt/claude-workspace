@@ -284,8 +284,6 @@ def build_video_filter_complex(
     # Segments from cut times
     boundaries = [0.0] + list(cut_times) + [clip_duration]
     segments   = [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
-    n_segs     = len(segments)
-
     fc_parts = []
     seg_labels = []
 
