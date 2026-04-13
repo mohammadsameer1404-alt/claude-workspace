@@ -294,7 +294,7 @@ def build_video_filter_complex(
         if seg_dur < 0.033:          # skip sub-frame segments
             continue
 
-        shot     = _choose_shot_type(i, n_segs)
+        shot     = _choose_shot_type(i)
         zp_expr  = _zoompan_expr(shot, seg_dur, crop_w, crop_h)
 
         # Lateral crop offset — alternate ±5% per segment
