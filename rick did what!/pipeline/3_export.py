@@ -1,11 +1,13 @@
 """
-Stage 3: Premium 9:16 Clip Export with Burned-In Captions (v2)
+Stage 3: Premium 9:16 Clip Export with Burned-In Captions (v3)
 
-v2 changes:
-  - Captions: 2 words at a time (TikTok-style), neon green #39FF14 + black outline, 58px, 78% from top
-  - Color grade: eq=contrast=1.2:saturation=1.6:brightness=0.01 + vignette — colors pop for R&M fans
-  - 1.05× zoom crop — characters fill more frame, feels intimate
-  - No libass needed — Pillow PNG overlay chain via FFmpeg filter_complex
+v3 changes:
+  - Captions: 72px (was 58px), pop-on-entry animation (96px for 0.15s then 72px)
+  - Minimum 0.35s per caption chunk — readable pacing
+  - Scene-cut reframe: PySceneDetect finds character cuts, crop X shifts ±4% at each
+  - Neon green #39FF14 + black outline, 2 words at a time, 78% from top
+  - Color grade: eq=contrast=1.2:saturation=1.6 + vignette, 1.05× zoom
+  - No libass — Pillow PNG overlay chain via FFmpeg filter_complex
   - H.265 M1 hardware, 10Mbps + 192k AAC
 """
 
@@ -23,12 +25,15 @@ AUDIO_BITRATE = "192k"
 TARGET_W      = 1080
 TARGET_H      = 1920
 
-# ── Caption style (v2: 2-word chunks, neon green, 78% from top) ───────────────
-CAPTION_COLOR       = (57, 255, 20)   # neon green #39FF14
-CAPTION_OUTLINE     = (0, 0, 0)       # black outline
-CAPTION_FONT_SIZE   = 58              # smaller than v1 (was 68)
-CAPTION_Y_RATIO     = 0.78            # lower on screen (was 0.70)
-CAPTION_CHUNK_WORDS = 2               # words shown per caption chunk
+# ── Caption style (v3) ────────────────────────────────────────────────────────
+CAPTION_COLOR        = (57, 255, 20)   # neon green #39FF14
+CAPTION_OUTLINE      = (0, 0, 0)       # black outline
+CAPTION_FONT_SIZE    = 72              # normal size (was 58)
+CAPTION_POP_SIZE     = 96             # pop-entry size (shown for 0.15s on entry)
+CAPTION_POP_DURATION = 0.15           # seconds the pop frame is shown
+CAPTION_MIN_DURATION = 0.35           # minimum display time per chunk
+CAPTION_Y_RATIO      = 0.78           # 78% from top
+CAPTION_CHUNK_WORDS  = 2              # words per caption chunk
 
 # ── Hook text style ───────────────────────────────────────────────────────────
 HOOK_FONT_SIZE  = 90
@@ -68,9 +73,8 @@ def render_hook_png(hook_text: str, out_path: str) -> None:
     draw = ImageDraw.Draw(img)
     font = _load_font(HOOK_FONT_SIZE)
 
-    # Wrap hook text if wider than frame
-    words = hook_text.split()
-    lines = []
+    words   = hook_text.split()
+    lines   = []
     current = []
     for word in words:
         test = " ".join(current + [word])
@@ -83,7 +87,7 @@ def render_hook_png(hook_text: str, out_path: str) -> None:
     if current:
         lines.append(" ".join(current))
 
-    y = int(TARGET_H * HOOK_Y_RATIO)
+    y      = int(TARGET_H * HOOK_Y_RATIO)
     line_h = draw.textbbox((0, 0), "Ag", font=font)[3] + 8
     for line in lines:
         bbox   = draw.textbbox((0, 0), line, font=font)
@@ -95,21 +99,22 @@ def render_hook_png(hook_text: str, out_path: str) -> None:
     img.save(out_path, "PNG")
 
 
-def render_word_chunk_png(words: list[str], out_path: str) -> None:
+def render_word_chunk_png(words: list[str], out_path: str,
+                          size: int = CAPTION_FONT_SIZE) -> None:
     """
     Render 1-2 words as neon green bold text with black outline.
-    TikTok-style: compact, centered, easy to read at a glance.
+    size controls the font — used for both normal (72px) and pop (96px) frames.
     """
     text = " ".join(words)
     img  = Image.new("RGBA", (TARGET_W, TARGET_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    font = _load_font(CAPTION_FONT_SIZE)
+    font = _load_font(size)
 
     bbox   = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
-    # Safety clamp — shrink font if text somehow exceeds frame width
+    # Safety clamp — shrink if somehow too wide
     if text_w > TARGET_W - 80:
-        font   = _load_font(max(36, CAPTION_FONT_SIZE - 14))
+        font   = _load_font(max(36, size - 16))
         bbox   = draw.textbbox((0, 0), text, font=font)
         text_w = bbox[2] - bbox[0]
 
@@ -127,10 +132,10 @@ def build_caption_pngs(
     clip_id: str,
 ) -> list[tuple[str, float, float]]:
     """
-    Pre-render caption PNGs — 2 words at a time, neon green.
+    Pre-render caption PNGs — 2 words at a time, neon green, with pop-entry animation.
+    Each chunk = pop frame (96px, 0.15s) + normal frame (72px, remainder).
     Returns list of (png_path, enable_start, enable_end).
     """
-    # Filter and retime words to clip-relative timestamps
     clip_words = [
         {
             "start": round(w["start"] - clip_start, 3),
@@ -146,22 +151,94 @@ def build_caption_pngs(
         return []
 
     entries = []
-    step = CAPTION_CHUNK_WORDS
+    step    = CAPTION_CHUNK_WORDS
+
     for i in range(0, len(clip_words), step):
         chunk   = clip_words[i : i + step]
         words   = [w["word"] for w in chunk]
         t_start = chunk[0]["start"]
         t_end   = chunk[-1]["end"]
 
-        # Ensure minimum visible duration (avoid sub-50ms flashes)
-        if t_end - t_start < 0.05:
-            t_end = t_start + 0.05
+        # Enforce minimum read time
+        if t_end - t_start < CAPTION_MIN_DURATION:
+            t_end = t_start + CAPTION_MIN_DURATION
 
-        png_path = os.path.join(png_dir, f"{clip_id}_c{i:04d}.png")
-        render_word_chunk_png(words, png_path)
-        entries.append((png_path, t_start, t_end))
+        pop_end = min(t_start + CAPTION_POP_DURATION, t_end)
+
+        # Pop frame — bigger font, shown for 0.15s on entry (the "emphasis hit")
+        pop_path = os.path.join(png_dir, f"{clip_id}_c{i:04d}_pop.png")
+        render_word_chunk_png(words, pop_path, size=CAPTION_POP_SIZE)
+        entries.append((pop_path, t_start, pop_end))
+
+        # Normal frame — standard 72px for the rest of the chunk duration
+        if t_end > pop_end:
+            norm_path = os.path.join(png_dir, f"{clip_id}_c{i:04d}.png")
+            render_word_chunk_png(words, norm_path, size=CAPTION_FONT_SIZE)
+            entries.append((norm_path, pop_end, t_end))
 
     return entries
+
+
+def detect_scene_cuts(video_path: str) -> list[float]:
+    """
+    Use PySceneDetect to find cut timestamps (seconds, clip-relative) in the clip.
+    These mark where characters change on screen — used to reframe the crop.
+    Returns [] on failure (graceful fallback to static center crop).
+    """
+    try:
+        from scenedetect import open_video, SceneManager
+        from scenedetect.detectors import ContentDetector
+        video = open_video(video_path)
+        sm    = SceneManager()
+        sm.add_detector(ContentDetector(threshold=27))
+        sm.detect_scenes(video, show_progress=False)
+        scenes = sm.get_scene_list()
+        # scenes[0] always starts at 0 — skip it, return starts of subsequent scenes
+        return [s[0].get_seconds() for s in scenes[1:]]
+    except Exception as e:
+        print(f"  [scene detect] skipped: {e}")
+        return []
+
+
+def crop_scale_filter(src_w: int, src_h: int,
+                      cut_times: list[float] | None = None) -> str:
+    """
+    Centre-crop to 9:16, apply dynamic X reframe at scene cuts,
+    scale to 1080×1920 with 1.05× zoom-in, then color grade + vignette.
+    """
+    ar     = 9 / 16
+    crop_w = int(src_h * ar)
+    crop_h = src_h
+    if crop_w > src_w:
+        crop_w = src_w
+        crop_h = int(src_w / ar)
+    x = (src_w - crop_w) // 2
+    y = (src_h - crop_h) // 2
+
+    # Build dynamic crop X expression if we have scene cuts
+    if cut_times:
+        shift  = int(crop_w * 0.04)   # ±4% of crop width per reframe
+        x_expr = str(x)               # default = center
+        # Build nested if() — earliest cut outermost (checked last, overrides inner)
+        for i, cut_t in enumerate(cut_times):
+            direction = 1 if i % 2 == 0 else -1
+            shifted_x = max(0, min(src_w - crop_w, x + direction * shift))
+            # Each new cut wraps previous expression as the else clause
+            x_expr = f"if(gte(t\\,{cut_t:.2f})\\,{shifted_x}\\,{x_expr})"
+        crop_part = f"crop={crop_w}:{crop_h}:x='{x_expr}':y={y}"
+    else:
+        crop_part = f"crop={crop_w}:{crop_h}:{x}:{y}"
+
+    zoom_w = int(TARGET_W * 1.05)   # 1134
+    zoom_h = int(TARGET_H * 1.05)   # 2016
+
+    return (
+        f"{crop_part},"
+        f"scale={zoom_w}:{zoom_h}:flags=lanczos,"
+        f"crop={TARGET_W}:{TARGET_H},"
+        f"eq=contrast=1.2:saturation=1.6:brightness=0.01,"
+        f"vignette=PI/5"
+    )
 
 
 def get_dimensions(path: str) -> tuple[int, int]:
@@ -173,33 +250,6 @@ def get_dimensions(path: str) -> tuple[int, int]:
     ], stderr=subprocess.DEVNULL).decode().strip()
     w, h = out.split(",")
     return int(w), int(h)
-
-
-def crop_scale_filter(src_w: int, src_h: int) -> str:
-    """
-    Centre-crop to 9:16, scale to 1080×1920 with 1.05× zoom-in,
-    then apply color grade (contrast+saturation) and vignette.
-    """
-    ar     = 9 / 16
-    crop_w = int(src_h * ar)
-    crop_h = src_h
-    if crop_w > src_w:
-        crop_w = src_w
-        crop_h = int(src_w / ar)
-    x = (src_w - crop_w) // 2
-    y = (src_h - crop_h) // 2
-
-    # 1.05× zoom: overshoot then crop back to exact target
-    zoom_w = int(TARGET_W * 1.05)   # 1134
-    zoom_h = int(TARGET_H * 1.05)   # 2016
-
-    return (
-        f"crop={crop_w}:{crop_h}:{x}:{y},"
-        f"scale={zoom_w}:{zoom_h}:flags=lanczos,"
-        f"crop={TARGET_W}:{TARGET_H},"
-        f"eq=contrast=1.2:saturation=1.6:brightness=0.01,"
-        f"vignette=PI/5"
-    )
 
 
 def export_clip(
@@ -225,7 +275,7 @@ def export_clip(
     hook_png = os.path.join(png_dir, "_hook.png")
 
     try:
-        # Step 1: stream-copy segment
+        # Step 1: stream-copy segment (timestamps reset to 0 in output)
         subprocess.run([
             "ffmpeg", "-y",
             "-ss", str(start), "-to", str(end),
@@ -234,19 +284,23 @@ def export_clip(
             "-loglevel", "error",
         ], check=True)
 
-        # Step 2: render hook PNG
+        # Step 2: detect scene cuts for reframing
+        cut_times = detect_scene_cuts(raw)
+        print(f"  Scene cuts: {len(cut_times)} → {[f'{t:.1f}s' for t in cut_times]}")
+
+        # Step 3: render hook PNG
         render_hook_png(hook_text, hook_png)
 
-        # Step 3: build caption PNGs (2 words at a time, neon green)
+        # Step 4: build caption PNGs (pop + normal per chunk)
         caption_entries = build_caption_pngs(words_data, start, end, png_dir, clip_id)
-        print(f"  Rendered {len(caption_entries)} caption chunks")
+        print(f"  Caption frames: {len(caption_entries)} (pop+normal pairs)")
 
-        # Step 4: get source dimensions
+        # Step 5: get source dimensions and build base filter
         w, h    = get_dimensions(raw)
-        vf_base = crop_scale_filter(w, h)
+        vf_base = crop_scale_filter(w, h, cut_times)
 
-        # Step 5: build FFmpeg filter_complex
-        # Input 0: raw video  |  Input 1: hook PNG  |  Inputs 2+: caption PNGs
+        # Step 6: build FFmpeg filter_complex
+        # Input 0: raw  |  Input 1: hook PNG  |  Inputs 2+: caption PNGs
         show_hook_until = min(HOOK_DURATION, (end - start) * 0.25)
         all_inputs      = [raw, hook_png] + [e[0] for e in caption_entries]
 
@@ -259,7 +313,7 @@ def export_clip(
         )
         prev = "vh"
 
-        # Caption overlays
+        # Caption overlays (pop frames and normal frames interleaved)
         for i, (_, t_start, t_end) in enumerate(caption_entries):
             inp_idx = i + 2
             label   = f"vc{i}"
@@ -269,13 +323,13 @@ def export_clip(
             )
             prev = label
 
-        # Rename final output label to [out]
+        # Rename final label to [out]
         last = fc_parts[-1]
         fc_parts[-1] = last[:last.rfind("[")] + "[out]"
 
         filter_complex = ";".join(fc_parts)
 
-        # Step 6: encode
+        # Step 7: encode
         cmd = ["ffmpeg", "-y"]
         for inp in all_inputs:
             cmd += ["-i", inp]
@@ -299,8 +353,9 @@ def export_clip(
         size_mb = os.path.getsize(out_path) / 1_000_000
         print(f"  Exported: {clip_id}.mp4  [{start:.0f}s–{end:.0f}s]  {size_mb:.1f} MB")
         print(f"    Hook    : \"{hook_text}\"")
-        print(f"    Captions: neon green, 2-word chunks, {int(CAPTION_Y_RATIO*100)}% from top ✓")
+        print(f"    Captions: neon green 72px, pop 96px@0.15s, 78% from top ✓")
         print(f"    Color   : contrast+1.2 saturation+1.6 vignette 1.05× zoom ✓")
+        print(f"    Reframe : {len(cut_times)} cut-point shifts applied ✓")
 
     finally:
         if os.path.exists(raw):
@@ -324,7 +379,6 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
             words_data = json.load(f)
         print(f"[3_export] Word timestamps: {len(words_data)} words loaded")
     else:
-        # Fallback: estimate from transcript segments
         transcript_path = os.path.join(pipeline_dir, f"{episode}_transcript.json")
         if os.path.exists(transcript_path):
             with open(transcript_path) as f:
@@ -351,8 +405,8 @@ def run(candidates_json: str, out_dir: str) -> list[str]:
     print(f"\n[3_export] Episode  : {episode}")
     print(f"[3_export] Clips    : {len(clips)} (max 3 per episode)")
     print(f"[3_export] Quality  : {TARGET_W}x{TARGET_H} @ {VIDEO_BITRATE} H.265 (M1 HW)")
-    print(f"[3_export] Captions : neon green, 2-word chunks, 78% from top")
-    print(f"[3_export] Effects  : contrast+1.2 saturation+1.6 vignette 1.05× zoom")
+    print(f"[3_export] Captions : neon green, 2-word chunks, pop animation, 78% from top")
+    print(f"[3_export] Effects  : contrast+1.2 saturation+1.6 vignette 1.05× zoom scene-reframe")
 
     exported = []
     for clip in clips:
