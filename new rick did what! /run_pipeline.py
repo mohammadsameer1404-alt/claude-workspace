@@ -29,7 +29,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Rick Tedwatt edit + audit pipeline")
     parser.add_argument("script", help="Path to clip spec JSON from the research skill")
     parser.add_argument("--hook", default=None, help="Hook title (auto-generated if omitted)")
-    parser.add_argument("--threshold", type=float, default=8.6, help="Virality gate threshold (default 8.6)")
+    parser.add_argument("--threshold", type=float, default=8.0, help="Virality gate threshold (default 8.0)")
     parser.add_argument("--audit-only", action="store_true", help="Skip editing, audit existing clips in output/raw/")
     args = parser.parse_args()
 
